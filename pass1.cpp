@@ -1,182 +1,154 @@
-#include <bits/stdc++.h>          // Includes all standard C++ libraries
+#include <bits/stdc++.h>
 using namespace std;
 
-// ==================== CLASS: Assembler ====================
-class Assembler {
-    // ----------------- INSTRUCTION TABLES -----------------
-    // IS: Imperative Statements (actual machine instructions)
-    map<string, string> IS = {
-        {"STOP", "00"}, {"ADD", "01"}, {"SUB", "02"}, {"MULT", "03"},
-        {"MOVER", "04"}, {"MOVEM", "05"}, {"COMP", "06"},
-        {"BC", "07"}, {"DIV", "08"}, {"READ", "09"}, {"PRINT", "10"}
-    };
-
-    // AD: Assembler Directives (handled by assembler, not machine)
-    map<string, string> AD = {
-        {"START", "01"}, {"END", "02"}, {"ORIGIN", "03"},
-        {"EQU", "04"}, {"LTORG", "05"}
-    };
-
-    // DL: Declarative Statements (for data definition)
-    map<string, string> DL = {
-        {"DC", "01"}, {"DS", "02"}
-    };
-
-    // REG: Register codes
-    map<string, int> REG = {
-        {"AREG", 1}, {"BREG", 2}, {"CREG", 3}, {"DREG", 4}
-    };
-
-    // ----------------- TABLES FOR PASS-1 -----------------
-    map<string, int> SYMTAB;          // Symbol table → label name + address
-    map<string, int> LITTAB;          // Literal table → literal name + address
-    vector<string> LITERAL_LIST;      // To preserve order of literals
-    vector<int> POOLTAB = {0};        // Starting index of each literal pool
-
-    int LOCCTR = 0;                   // Location Counter (tracks memory address)
-    int POOL_PTR = 0;                 // Tracks literal pool index
-
-    // ----------------- HELPER: Split Input Line -----------------
-    vector<string> split(string line) {
-        replace(line.begin(), line.end(), ',', ' ');  // Replace commas with spaces
-        stringstream ss(line);
-        string word;
-        vector<string> tokens;
-        while (ss >> word) tokens.push_back(word);    // Split line into tokens
-        return tokens;
-    }
-
-    // ----------------- HELPER: Assign Literal Addresses -----------------
-    void assignLiterals(ofstream &out) {
-        for (int i = POOLTAB.back(); i < LITERAL_LIST.size(); i++) {
-            string lit = LITERAL_LIST[i];
-            if (LITTAB[lit] == -1) {                 // If literal unassigned
-                LITTAB[lit] = LOCCTR++;              // Assign current LOCCTR
-                string value = lit.substr(2, lit.size() - 3); // ='5' → 5
-                // Write this literal to intermediate file
-                out << LITTAB[lit] << "\t(DL,01)\t(C," << value << ")\n";
-            }
-        }
-        POOLTAB.push_back(LITERAL_LIST.size());      // Update POOLTAB
-    }
-
-public:
-    // ----------------- SOURCE CODE STORAGE -----------------
-    vector<string> source;
-    void readSource(string file) {
-        ifstream fin(file);
-        string line;
-        while (getline(fin, line)) source.push_back(line);  // Read each line
-    }
-
-    // ================== PASS-1 STARTS ==================
-    void pass1() {
-        ofstream out("intermediate.txt");            // Output intermediate file
-
-        for (string line : source) {
-            if (line.empty()) continue;
-            auto tokens = split(line);               // Break line into tokens
-
-            string label = "", opcode = tokens[0];   // Assume first word = opcode
-            vector<string> operands;
-
-            // ---------- If first token is NOT opcode → it’s a label ----------
-            if (!IS.count(opcode) && !AD.count(opcode) && !DL.count(opcode)) {
-                label = opcode;                      // First word is label
-                opcode = tokens[1];                  // Next word is opcode
-                for (int i = 2; i < tokens.size(); i++) operands.push_back(tokens[i]);
-            } else {
-                for (int i = 1; i < tokens.size(); i++) operands.push_back(tokens[i]);
-            }
-
-            // ---------- If label exists, store its address ----------
-            if (!label.empty()) SYMTAB[label] = LOCCTR;
-
-            // ---------- HANDLE ASSEMBLER DIRECTIVES ----------
-            if (AD.count(opcode)) {
-                if (opcode == "START") {
-                    LOCCTR = stoi(operands[0]);       // Initialize LOCCTR
-                    out << LOCCTR << "\t(AD,01)\t(C," << LOCCTR << ")\n";
-                } 
-                else if (opcode == "END" || opcode == "LTORG") {
-                    assignLiterals(out);              // Assign addresses to literals
-                    out << LOCCTR << "\t(AD," << AD[opcode] << ")\n";
-                    if (opcode == "END") break;       // Stop processing after END
-                }
-                else if (opcode == "ORIGIN") {
-                    LOCCTR = SYMTAB[operands[0]];     // Set LOCCTR to symbol address
-                    out << LOCCTR << "\t(AD,03)\t(C," << LOCCTR << ")\n";
-                }
-                else if (opcode == "EQU") {
-                    SYMTAB[label] = SYMTAB[operands[0]]; // Assign same address
-                    out << "-\t(AD,04)\t(S," << operands[0] << ")\n";
-                }
-                continue;
-            }
-
-            // ---------- HANDLE DECLARATIVE STATEMENTS ----------
-            if (DL.count(opcode)) {
-                SYMTAB[label] = LOCCTR;               // Save label in SYMTAB
-                out << LOCCTR << "\t(DL," << DL[opcode] << ")\t(C," << operands[0] << ")\n";
-                // Increment LOCCTR
-                LOCCTR += (opcode == "DS") ? stoi(operands[0]) : 1;
-                continue;
-            }
-
-            // ---------- HANDLE IMPERATIVE STATEMENTS ----------
-            if (IS.count(opcode)) {
-                out << LOCCTR << "\t(IS," << IS[opcode] << ")\t";
-
-                // --- REGISTER CODE ---
-                int regCode = (operands.size() > 0 && REG.count(operands[0])) ? REG[operands[0]] : 0;
-                out << "(R," << regCode << ")\t";
-
-                // --- SYMBOL OR LITERAL ---
-                if (operands.size() > 1) {
-                    string op = operands[1];
-                    if (op[0] == '=') {               // It’s a literal
-                        if (!LITTAB.count(op)) {
-                            LITTAB[op] = -1;          // Placeholder
-                            LITERAL_LIST.push_back(op);
-                        }
-                        out << "(L," << LITERAL_LIST.size() << ")"; // literal index
-                    } else {                          // It’s a symbol
-                        if (!SYMTAB.count(op)) SYMTAB[op] = -1;     // Placeholder
-                        out << "(S," << op << ")";     // symbol reference
-                    }
-                }
-                out << "\n";
-                LOCCTR++;                              // Move to next address
-            }
-        }
-
-        out.close();                                   // Intermediate file ready
-        writeTables();                                 // Generate symbol/literal/pool tables
-    }
-
-    // ================== WRITE TABLES ==================
-    void writeTables() {
-        ofstream s("symtab.txt"), l("littab.txt"), p("pooltab.txt");
-
-        // --- SYMBOL TABLE ---
-        s << "Index\tSymbol\tAddress\n";
-        int i = 1;
-        for (auto &x : SYMTAB) s << i++ << "\t" << x.first << "\t" << x.second << "\n";
-
-        // --- LITERAL TABLE ---
-        l << "Index\tLiteral\tAddress\n";
-        i = 1;
-        for (auto &x : LITERAL_LIST) l << i++ << "\t" << x << "\t" << LITTAB[x] << "\n";
-
-        // --- POOL TABLE ---
-        p << "Pool Index\n";
-        for (int val : POOLTAB) p << val << "\n";
-    }
+// ---------------- STRUCTURES ----------------
+struct Symbol {
+    string name;
+    int address;
 };
 
-// ================== MAIN FUNCTION ==================
+struct Literal {
+    string name;
+    int address;
+};
+
+// ---------------- FUNCTION: Process Pass-II ----------------
+void processPass2(vector<Symbol> symtab, vector<Literal> littab,
+                  vector<int> pooltab, vector<string> intermediate) {
+    ofstream machineCode("machinecode.txt");
+
+    for (string line : intermediate) {
+        if (line.empty()) continue; // skip empty lines
+
+        stringstream ss(line);
+        string LC, classOp, reg, operand;
+        ss >> LC >> classOp;
+
+        // ----------- 1️⃣ Skip Assembler Directives (AD) -----------
+        if (classOp.find("AD") != string::npos) {
+            // Handle ORIGIN or EQU if needed (address update only)
+            if (classOp.find("AD,03") != string::npos) {
+                // Example: (S,1)+3 or (S,2)+5
+                string expr;
+                ss >> expr;
+                if (expr.find("+") != string::npos) {
+                    size_t plusPos = expr.find('+');
+                    string symPart = expr.substr(0, plusPos);
+                    string offsetPart = expr.substr(plusPos + 1);
+                    if (symPart.find("S,") != string::npos) {
+                        int symIndex = stoi(symPart.substr(2)) - 1;
+                        int offset = stoi(offsetPart);
+                        int newAddr = symtab[symIndex].address + offset;
+                        machineCode << LC << "\t(AD,03)\t(C," << newAddr << ")\n";
+                    }
+                }
+            }
+            continue;
+        }
+
+        // ----------- 2️⃣ Handle Declarative Statements (DL) -----------
+        if (classOp.find("DL,01") != string::npos) {
+            // Declare Constant (DC)
+            ss >> operand;
+            string lit = operand;
+            if (!lit.empty() && lit[0] == '=') lit = lit.substr(1); // remove '='
+            if (!lit.empty() && lit[0] == '\'') lit = lit.substr(1, lit.size() - 2); // remove quotes
+            machineCode << LC << "\t00\t0\t" << lit << endl;
+        } 
+        else if (classOp.find("DL,02") != string::npos) {
+            // Declare Storage (DS)
+            machineCode << LC << "\t--\t--\t--" << endl;
+        }
+
+        // ----------- 3️⃣ Handle Imperative Statements (IS) -----------
+        else if (classOp.find("IS") != string::npos) {
+            ss >> reg >> operand;
+            string opcode = classOp.substr(3);  // e.g. "04"
+            string opfield = "000";             // default operand
+
+            // Case 1: Operand is empty
+            if (operand.empty() || operand == "-") {
+                opfield = "000";
+            }
+            // Case 2: Operand refers to a Literal (L,index)
+            else if (operand.find("L,") != string::npos) {
+                string clean = operand.substr(2);
+                int idx = 0;
+                try { idx = stoi(clean) - 1; } catch (...) { idx = -1; }
+                if (idx >= 0 && idx < littab.size())
+                    opfield = to_string(littab[idx].address);
+            }
+            // Case 3: Operand refers to a Symbol (S,index)
+            else if (operand.find("S,") != string::npos) {
+                string clean = operand.substr(2);
+                int idx = 0;
+                try { idx = stoi(clean) - 1; } catch (...) { idx = -1; }
+                if (idx >= 0 && idx < symtab.size())
+                    opfield = to_string(symtab[idx].address);
+            }
+            // Case 4: Operand is constant
+            else if (operand.find("C,") != string::npos) {
+                opfield = operand.substr(3, operand.size() - 4); // extract constant value
+            }
+
+            // Output: LC  OPCODE  REG  OPERAND_ADDRESS
+            machineCode << LC << "\t" << opcode << "\t" << reg << "\t" << opfield << endl;
+        }
+
+        // ----------- 4️⃣ Handle Invalid Lines -----------
+        else {
+            machineCode << LC << "\t--\t--\t--\t; Unsupported or invalid\n";
+        }
+    }
+
+    machineCode.close();
+    cout << "✅ PASS-II completed successfully. Check 'machinecode.txt'.\n";
+}
+
+// ---------------- MAIN FUNCTION ----------------
 int main() {
-    Assembler a;                         // Create Assembler object
-    a.readSource("input.txt");           // Read source program from file
-    a.pass1();                           // Execute Pass-1
+    // ---------------- SYMBOL TABLE ----------------
+    vector<Symbol> symtab = {
+        {"L1", 205},
+        {"NEXT", 209},
+        {"BACK", 213},
+        {"X", 218}
+    };
+
+    // ---------------- LITERAL TABLE ----------------
+    vector<Literal> littab = {
+        {"=5", 202},
+        {"=2", 206},
+        {"=1", 210},
+        {"=2", 211},
+        {"=4", 217}
+    };
+
+    // ---------------- POOL TABLE ----------------
+    vector<int> pooltab = {1, 3, 5};
+
+    // ---------------- INTERMEDIATE CODE ----------------
+    vector<string> intermediate = {
+        "201 (AD,01) (C,201)",
+        "201 (IS,04) 1 (L,1)",
+        "202 (IS,05) 1 (S,4)",
+        "203 (IS,04) 2 (L,2)",
+        "204 (AD,03) (S,1)+3",
+        "207 (AD,05)",
+        "208 (IS,01) 1 (L,3)",
+        "209 (IS,02) 2 (L,4)",
+        "210 (IS,07) 4 (S,3)",
+        "211 (AD,05)",
+        "212 (AD,04) (S,1)",
+        "213 (AD,03) (S,2)+5",
+        "214 (IS,03) 3 (L,5)",
+        "215 (IS,00)",
+        "216 (DL,02) 1",
+        "217 (AD,02)"
+    };
+
+    // ---------------- RUN PASS-II ----------------
+    processPass2(symtab, littab, pooltab, intermediate);
+
+    return 0;
 }
